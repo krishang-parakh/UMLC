@@ -1,169 +1,103 @@
-import torch
-from torch.utils.data import DataLoader, Dataset, random_split
-from transformers import BartTokenizer, BartForConditionalGeneration, AdamW
-import json
-from sklearn.metrics import accuracy_score, f1_score
-import os
+from __future__ import annotations
 
-# Step 1: Dataset Definition
+import argparse
+import json
+from pathlib import Path
+
+import torch
+from sklearn.metrics import accuracy_score, f1_score
+from torch.utils.data import DataLoader, Dataset, random_split
+from transformers import BartForConditionalGeneration, BartTokenizerFast
+
+
 class MathWordProblemDataset(Dataset):
-    def __init__(self, data_file, tokenizer, max_length=512):
-        # Load dataset from JSON with utf-8 encoding
-        with open(data_file, 'r', encoding='utf-8') as file:
-            data = json.load(file)
-        
-        self.data = data
+    def __init__(self, data_file: Path, tokenizer: BartTokenizerFast, max_length: int = 256):
+        with data_file.open("r", encoding="utf-8") as f:
+            self.data = json.load(f)
         self.tokenizer = tokenizer
         self.max_length = max_length
 
-    def __len__(self):
+    def __len__(self) -> int:
         return len(self.data)
 
-    def __getitem__(self, idx):
-        question = self.data[idx]['question']
-        answer = self.data[idx]['answer']
-        
-        # Tokenize question and answer
-        input_encodings = self.tokenizer(
-            question, padding='max_length', truncation=True, max_length=self.max_length, return_tensors="pt"
-        )
-        target_encodings = self.tokenizer(
-            answer, padding='max_length', truncation=True, max_length=self.max_length, return_tensors="pt"
-        )
-        
-        input_ids = input_encodings['input_ids'].squeeze()
-        attention_mask = input_encodings['attention_mask'].squeeze()
-        labels = target_encodings['input_ids'].squeeze()
-
+    def __getitem__(self, idx: int) -> dict[str, torch.Tensor]:
+        row = self.data[idx]
+        source = self.tokenizer(row["question"], padding="max_length", truncation=True, max_length=self.max_length, return_tensors="pt")
+        target = self.tokenizer(str(row["answer"]), padding="max_length", truncation=True, max_length=self.max_length, return_tensors="pt")
         return {
-            'input_ids': input_ids.to(device),  # Move input to GPU
-            'attention_mask': attention_mask.to(device),  # Move mask to GPU
-            'labels': labels.to(device)  # Move labels to GPU
+            "input_ids": source["input_ids"].squeeze(0),
+            "attention_mask": source["attention_mask"].squeeze(0),
+            "labels": target["input_ids"].squeeze(0),
         }
 
-# Step 2: Split dataset into train, validation, and test sets
-def split_dataset(dataset, train_split=0.7, val_split=0.15):
-    train_size = int(train_split * len(dataset))
-    val_size = int(val_split * len(dataset))
-    test_size = len(dataset) - train_size - val_size
 
-    return random_split(dataset, [train_size, val_size, test_size])
+def resolve_dataset_path(dataset_dir: Path, name: str) -> Path:
+    p = dataset_dir / f"{name}.json"
+    if p.exists():
+        return p
+    p = dataset_dir / name / f"{name}.json"
+    if p.exists():
+        return p
+    raise FileNotFoundError(name)
 
-# Step 3: Prepare the Dataset and DataLoader for train/validation/test
-def prepare_data(json_file, tokenizer, batch_size=16):
-    dataset = MathWordProblemDataset(json_file, tokenizer)
-    
-    train_data, val_data, test_data = split_dataset(dataset)
-    
-    train_loader = DataLoader(train_data, batch_size=batch_size, shuffle=True)
-    val_loader = DataLoader(val_data, batch_size=batch_size)
-    test_loader = DataLoader(test_data, batch_size=batch_size)
-    
-    return train_loader, val_loader, test_loader
 
-# Step 4: Model Definition
-def build_model():
-    model = BartForConditionalGeneration.from_pretrained('facebook/bart-base')
-    tokenizer = BartTokenizer.from_pretrained('facebook/bart-base')
-    model = model.to(device)  # Move model to GPU
-    return model, tokenizer
-
-# Step 5: Train the Model
-def train_model(model, dataloader, optimizer, num_epochs=5):
+def train_epoch(model: BartForConditionalGeneration, loader: DataLoader, device: torch.device, lr: float = 2e-5) -> float:
     model.train()
+    optim = torch.optim.AdamW(model.parameters(), lr=lr)
+    total = 0.0
+    for batch in loader:
+        optim.zero_grad()
+        outputs = model(
+            input_ids=batch["input_ids"].to(device),
+            attention_mask=batch["attention_mask"].to(device),
+            labels=batch["labels"].to(device),
+        )
+        outputs.loss.backward()
+        optim.step()
+        total += float(outputs.loss.item())
+    return total / max(1, len(loader))
 
-    for epoch in range(num_epochs):
-        total_loss = 0
-        for batch in dataloader:
-            optimizer.zero_grad()
 
-            # Forward pass
-            outputs = model(input_ids=batch['input_ids'], attention_mask=batch['attention_mask'], labels=batch['labels'])
-            loss = outputs.loss
-            total_loss += loss.item()
-
-            # Backward pass and optimization
-            loss.backward()
-            optimizer.step()
-
-        avg_loss = total_loss / len(dataloader)
-        print(f'Epoch [{epoch + 1}/{num_epochs}], Loss: {avg_loss:.4f}')
-
-# Step 6: Evaluate Model Performance
-def evaluate_model(model, dataloader):
+def evaluate(model: BartForConditionalGeneration, tokenizer: BartTokenizerFast, loader: DataLoader, device: torch.device) -> tuple[float, float]:
     model.eval()
-    predictions, true_labels = [], []
-    total_loss = 0
-
+    y_true, y_pred = [], []
     with torch.no_grad():
-        for batch in dataloader:
-            outputs = model(input_ids=batch['input_ids'], attention_mask=batch['attention_mask'], labels=batch['labels'])
-            loss = outputs.loss
-            total_loss += loss.item()
+        for batch in loader:
+            out = model.generate(batch["input_ids"].to(device), max_new_tokens=32)
+            y_pred.extend([x.strip().lower() for x in tokenizer.batch_decode(out, skip_special_tokens=True)])
+            y_true.extend([x.strip().lower() for x in tokenizer.batch_decode(batch["labels"], skip_special_tokens=True)])
+    return accuracy_score(y_true, y_pred), f1_score(y_true, y_pred, average="weighted")
 
-            generated_ids = model.generate(batch['input_ids'], max_length=50, num_beams=4, early_stopping=True)
-            predictions.extend(generated_ids.cpu().numpy())  # Move predictions back to CPU
-            true_labels.extend(batch['labels'].cpu().numpy())  # Move labels back to CPU
 
-    avg_loss = total_loss / len(dataloader)
-    f1 = f1_score(true_labels, predictions, average='weighted')
-    accuracy = accuracy_score(true_labels, predictions)
-    
-    return avg_loss, accuracy, f1
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Train/evaluate Bart-based BertGen baseline")
+    parser.add_argument("--dataset-dir", type=Path, default=Path(__file__).resolve().parents[2] / "datasets")
+    parser.add_argument("--dataset", default="MATH")
+    parser.add_argument("--max-samples", type=int, default=256)
+    parser.add_argument("--batch-size", type=int, default=2)
+    return parser.parse_args()
 
-# Step 7: Predict Using the Trained Model
-def predict_model(model, tokenizer, question):
-    model.eval()
-    inputs = tokenizer(
-        question, return_tensors="pt", truncation=True, padding='max_length', max_length=512
-    ).to(device)  # Move input to GPU
 
-    with torch.no_grad():
-        generated_ids = model.generate(inputs.input_ids, max_length=50, num_beams=4, early_stopping=True)
-    
-    prediction = tokenizer.decode(generated_ids[0], skip_special_tokens=True)
-    return prediction
+def main() -> None:
+    args = parse_args()
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    tokenizer = BartTokenizerFast.from_pretrained("facebook/bart-base")
+    model = BartForConditionalGeneration.from_pretrained("facebook/bart-base").to(device)
 
-# Step 8: Load MATH and GSM8K datasets
-def load_datasets(dataset_dir, tokenizer, batch_size=16):
-    datasets = ['UMLC', 'MATH', 'GSM8K']
-    dataloaders = {}
-    
-    for dataset_name in datasets:
-        json_file = os.path.join(dataset_dir, dataset_name, f"{dataset_name}.json")
-        train_loader, val_loader, test_loader = prepare_data(json_file, tokenizer, batch_size)
-        dataloaders[dataset_name] = (train_loader, val_loader, test_loader)
-    
-    return dataloaders
+    dataset = MathWordProblemDataset(resolve_dataset_path(args.dataset_dir, args.dataset), tokenizer)
+    if args.max_samples < len(dataset):
+        dataset, _ = random_split(dataset, [args.max_samples, len(dataset) - args.max_samples])
 
-def main():
-    dataset_dir = r'C:\Users\micha\UMLC Project\datasets'
-    
-    # Initialize model and tokenizer
-    model, tokenizer = build_model()
+    train_size = max(1, int(0.8 * len(dataset)))
+    test_size = len(dataset) - train_size
+    train_data, test_data = random_split(dataset, [train_size, test_size])
+    train_loader = DataLoader(train_data, batch_size=args.batch_size, shuffle=True)
+    test_loader = DataLoader(test_data, batch_size=args.batch_size)
 
-    # Move model to GPU if available
-    global device
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    
-    # Load datasets for UMLC, MATH, and GSM8K
-    dataloaders = load_datasets(dataset_dir, tokenizer)
+    loss = train_epoch(model, train_loader, device)
+    acc, f1 = evaluate(model, tokenizer, test_loader, device)
+    print(f"{args.dataset}: loss={loss:.4f}, accuracy={acc:.4f}, f1={f1:.4f}")
 
-    # Train and evaluate on each dataset
-    for dataset_name, (train_loader, val_loader, test_loader) in dataloaders.items():
-        print(f"Training on {dataset_name} dataset...")
-        optimizer = AdamW(model.parameters(), lr=2e-5)
-
-        # Train the model
-        train_model(model, train_loader, optimizer, num_epochs=3)
-
-        # Evaluate the model
-        val_loss, val_accuracy, val_f1 = evaluate_model(model, val_loader)
-        print(f"Validation Performance for {dataset_name} - Loss: {val_loss:.4f}, Accuracy: {val_accuracy:.4f}, F1 Score: {val_f1:.4f}")
-
-        # Test the model
-        test_loss, test_accuracy, test_f1 = evaluate_model(model, test_loader)
-        print(f"Test Performance for {dataset_name} - Loss: {test_loss:.4f}, Accuracy: {test_accuracy:.4f}, F1 Score: {test_f1:.4f}")
 
 if __name__ == "__main__":
     main()

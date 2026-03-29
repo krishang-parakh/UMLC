@@ -1,22 +1,14 @@
-# Install PyTorch (with or without CUDA support depending on your machine)
-pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118  # For CUDA 11.8 support
-# For CPU, remove the --index-url flag:
-# pip install torch torchvision torchaudio
+# Core ML stack
+torch>=2.2
+torchvision>=0.17
+torchaudio>=2.2
+transformers>=4.40
+scikit-learn>=1.4
+numpy>=1.26
+tqdm>=4.66
 
-# Install MWPToolkit for Graph2Tree and math word problem support
-pip install mwptoolkit
+# API client
+openai>=1.30
 
-# Install Huggingface Transformers for BertGen, GPT-2 models
-pip install transformers
-
-# Install OpenAI Python Client for GPT-3 API access
-pip install openai
-
-# Install scikit-learn for performance metrics
-pip install scikit-learn
-
-# Optional: tqdm for progress bars
-pip install tqdm
-
-# Optional: NumPy for handling numerical data
-pip install numpy
+# Graph2Tree dependency
+mwptoolkit>=1.0
