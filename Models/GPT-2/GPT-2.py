@@ -4,6 +4,8 @@ import argparse
 import json
 from pathlib import Path
 
+import py7zr
+
 import torch
 from sklearn.metrics import accuracy_score, f1_score
 from torch.utils.data import DataLoader, Dataset, random_split
@@ -37,10 +39,23 @@ def resolve_dataset_path(dataset_dir: Path, name: str) -> Path:
     candidate = dataset_dir / f"{name}.json"
     if candidate.exists():
         return candidate
+
     nested = dataset_dir / name / f"{name}.json"
     if nested.exists():
         return nested
-    raise FileNotFoundError(f"Unable to find dataset for '{name}' in {dataset_dir}")
+
+    archive = dataset_dir / f"{name}.7z"
+    if archive.exists():
+        with py7zr.SevenZipFile(archive, mode="r") as zf:
+            zf.extractall(path=dataset_dir)
+        if candidate.exists():
+            return candidate
+        if nested.exists():
+            return nested
+
+    raise FileNotFoundError(
+        f"Unable to find dataset for '{name}'. Checked {candidate}, {nested}, and archive {archive}."
+    )
 
 
 def make_loaders(dataset: Dataset, batch_size: int = 4) -> tuple[DataLoader, DataLoader]:

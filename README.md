@@ -20,7 +20,7 @@ This project highlights the application of advanced NLP models for educational t
 Install dependencies with:
 
 ```bash
-pip install -r Requirements.txt
+pip install -r requirements.txt
 ```
 
 

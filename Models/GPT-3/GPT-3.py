@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 from typing import Iterable
 
+import py7zr
 from openai import OpenAI
 from sklearn.metrics import accuracy_score, f1_score
 
@@ -55,10 +56,23 @@ def resolve_dataset_path(dataset_dir: Path, name: str) -> Path:
     candidate = dataset_dir / f"{name}.json"
     if candidate.exists():
         return candidate
+
     nested = dataset_dir / name / f"{name}.json"
     if nested.exists():
         return nested
-    raise FileNotFoundError(f"Unable to find dataset for '{name}' in {dataset_dir}")
+
+    archive = dataset_dir / f"{name}.7z"
+    if archive.exists():
+        with py7zr.SevenZipFile(archive, mode="r") as zf:
+            zf.extractall(path=dataset_dir)
+        if candidate.exists():
+            return candidate
+        if nested.exists():
+            return nested
+
+    raise FileNotFoundError(
+        f"Unable to find dataset for '{name}'. Checked {candidate}, {nested}, and archive {archive}."
+    )
 
 
 def parse_args() -> argparse.Namespace:

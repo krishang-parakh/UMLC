@@ -4,6 +4,8 @@ import argparse
 import json
 from pathlib import Path
 
+import py7zr
+
 import torch
 from sklearn.metrics import accuracy_score, f1_score
 from torch.utils.data import DataLoader, Dataset, random_split
@@ -35,10 +37,23 @@ def resolve_dataset_path(dataset_dir: Path, name: str) -> Path:
     p = dataset_dir / f"{name}.json"
     if p.exists():
         return p
-    p = dataset_dir / name / f"{name}.json"
-    if p.exists():
-        return p
-    raise FileNotFoundError(name)
+
+    nested = dataset_dir / name / f"{name}.json"
+    if nested.exists():
+        return nested
+
+    archive = dataset_dir / f"{name}.7z"
+    if archive.exists():
+        with py7zr.SevenZipFile(archive, mode="r") as zf:
+            zf.extractall(path=dataset_dir)
+        if p.exists():
+            return p
+        if nested.exists():
+            return nested
+
+    raise FileNotFoundError(
+        f"Unable to find dataset for '{name}'. Checked {p}, {nested}, and archive {archive}."
+    )
 
 
 def train_epoch(model: BartForConditionalGeneration, loader: DataLoader, device: torch.device, lr: float = 2e-5) -> float:

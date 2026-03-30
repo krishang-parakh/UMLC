@@ -11,4 +11,7 @@ tqdm>=4.66
 openai>=1.30
 
 # Graph2Tree dependency
-mwptoolkit>=1.0
+mwptoolkit>=0.0.6
+
+# Archive extraction for UMLC dataset
+py7zr>=0.21
