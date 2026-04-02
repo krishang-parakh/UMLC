@@ -16,8 +16,13 @@ This project focuses on implementing and evaluating four state-of-the-art models
 This project highlights the application of advanced NLP models for educational tasks, showcasing the intersection of language understanding and mathematical reasoning.
 
 
-## Installtion Requirements
-Read the Rrequirements.txt file to understand the basic components required for implementing this project.
+## Installation Requirements
+Install dependencies with:
+
+```bash
+pip install -r requirements.txt
+```
+
 
 ## Directory structure
 
@@ -36,7 +41,7 @@ UMLC_Project/
 └── Requirements.txt  # List of required Python packages and dependencies
 
 
-For deployments, you have to change the project path according to your project requirements. You may need to have different versions of python environment to implement and execute the models. Its advisable to have a conda platform to run each model indepentenly. 
+For deployments, use the new command-line options in each model script (for example, `--dataset-dir`) instead of hard-coded absolute paths. A virtual environment (venv/conda) is recommended.
 
 
 ### UMLC Dataset Overview:

@@ -1,123 +1,104 @@
-import openai
+from __future__ import annotations
+
+import argparse
 import json
 import os
+from pathlib import Path
+from typing import Iterable
 
-# Step 1: Convert the dataset to fine-tuning format (JSONL)
-def convert_to_finetune_format(json_file, output_file):
-    """ Convert the dataset to OpenAI GPT-3 fine-tuning JSONL format. """
-    try:
-        with open(json_file, 'r', encoding='utf-8') as f:
-            data = json.load(f)
-        
-        with open(output_file, 'w', encoding='utf-8') as out_file:
-            for item in data:
-                prompt = item['question'] + "\nAnswer:"
-                completion = " " + item['answer']
-                out_file.write(json.dumps({"prompt": prompt, "completion": completion}) + "\n")
-        
-        print(f"Dataset successfully converted to {output_file}")
-    except FileNotFoundError:
-        print(f"Error: {json_file} not found.")
-    except json.JSONDecodeError:
-        print(f"Error: {json_file} is not properly formatted as JSON.")
+import py7zr
+from openai import OpenAI
+from sklearn.metrics import accuracy_score, f1_score
 
-# Step 2: Fine-tune GPT-3 model using OpenAI CLI
-def fine_tune_gpt3_via_cli(jsonl_file, model="davinci"):
-    """ Fine-tune GPT-3 using OpenAI CLI. """
-    try:
-        # Upload dataset and fine-tune via OpenAI CLI
-        os.system(f"openai tools fine_tunes.prepare_data -f {jsonl_file}")
-        os.system(f"openai api fine_tunes.create -t {jsonl_file} -m {model}")
-        print(f"Fine-tuning started for {jsonl_file}")
 
-    except Exception as e:
-        print(f"An error occurred during fine-tuning: {e}")
-
-# Step 3: Use the fine-tuned model to predict answers
-def predict_gpt3(api_key, prompt, model_name="gpt-3.5-turbo", stop=["\n"], max_tokens=100, temperature=0.5):
-    """ Generate prediction using fine-tuned GPT-3 model. """
-    openai.api_key = api_key
-    try:
-        response = openai.Completion.create(
-            model=model_name,
-            prompt=prompt,
-            max_tokens=max_tokens,
-            temperature=temperature,
-            stop=stop
-        )
-        return response['choices'][0]['text'].strip()
-    except openai.error.OpenAIError as e:
-        print(f"OpenAI API error: {e}")
-    except Exception as e:
-        print(f"An error occurred: {e}")
-
-# Step 4: Evaluate the model's performance
-def evaluate_performance(api_key, dataset_file, model_name="gpt-3.5-turbo"):
-    """ Evaluate GPT-3 model on accuracy, F1 score and other benchmarks. """
-    with open(dataset_file, 'r', encoding='utf-8') as f:
+def load_dataset(dataset_file: Path) -> list[dict[str, str]]:
+    with dataset_file.open("r", encoding="utf-8") as f:
         data = json.load(f)
-    
-    y_true = []
-    y_pred = []
+    if not isinstance(data, list):
+        raise ValueError(f"Expected list records in {dataset_file}")
+    return data
 
-    for item in data:
-        prompt = item['question'] + " Answer:"
-        true_answer = item['answer']
-        predicted_answer = predict_gpt3(api_key, prompt, model_name=model_name)
-        
-        y_true.append(true_answer.strip().lower())
-        y_pred.append(predicted_answer.strip().lower())
 
-    # Calculate Accuracy and F1 score
-    accuracy = accuracy_score(y_true, y_pred)
-    f1 = f1_score(y_true, y_pred, average='weighted')
-    
-    return accuracy, f1
+def build_prompt(question: str) -> str:
+    return f"Solve this math word problem. Return only the final answer.\n\nQuestion: {question}\nAnswer:"
 
-# Step 5: Process multiple datasets (UMLC, MATH, GSM8K)
-def process_datasets(dataset_dir, datasets, api_key, model_name="gpt-3.5-turbo"):
-    """ Process multiple datasets and fine-tune GPT-3 for each one. """
-    performance_results = {}
-    
-    for dataset_name in datasets:
-        print(f"Processing dataset: {dataset_name}")
-        json_file = os.path.join(dataset_dir, f"{dataset_name}.json")
-        jsonl_file = os.path.join(dataset_dir, f"{dataset_name}_gpt3_finetune.jsonl")
 
-        # Convert dataset to fine-tune format
-        convert_to_finetune_format(json_file, jsonl_file)
+def predict(client: OpenAI, model: str, question: str, max_tokens: int = 64, temperature: float = 0.0) -> str:
+    response = client.responses.create(
+        model=model,
+        input=build_prompt(question),
+        max_output_tokens=max_tokens,
+        temperature=temperature,
+    )
+    return (response.output_text or "").strip()
 
-        # Fine-tune GPT-3 using OpenAI CLI
-        fine_tune_gpt3_via_cli(jsonl_file, model=model_name)
 
-        # Evaluate the model's performance
-        accuracy, f1 = evaluate_performance(api_key, json_file, model_name=model_name)
+def evaluate(client: OpenAI, model: str, data: Iterable[dict[str, str]], limit: int | None = None) -> tuple[float, float]:
+    y_true: list[str] = []
+    y_pred: list[str] = []
 
-        performance_results[dataset_name] = {
-            "accuracy": accuracy,
-            "f1_score": f1
-        }
-        print(f"Performance for {dataset_name}: Accuracy: {accuracy:.4f}, F1 Score: {f1:.4f}")
+    for idx, item in enumerate(data):
+        if limit is not None and idx >= limit:
+            break
+        question = item["question"]
+        truth = str(item["answer"]).strip().lower()
+        pred = predict(client, model, question).strip().lower()
+        y_true.append(truth)
+        y_pred.append(pred)
 
-    return performance_results
+    if not y_true:
+        raise ValueError("No evaluation samples were found")
 
-# Step 6: Example of prediction using the fine-tuned model
-def main():
-    api_key = 'your-openai-api-key'
+    return accuracy_score(y_true, y_pred), f1_score(y_true, y_pred, average="weighted")
 
-    # Directory containing the datasets
-    dataset_dir = r'C:\Users\micha\UMLC_Project\datasets'
-    
-    # List of datasets to process
-    datasets = ['UMLC', 'MATH', 'GSM8K']
 
-    # Process each dataset and evaluate performance
-    performance_results = process_datasets(dataset_dir, datasets, api_key)
+def resolve_dataset_path(dataset_dir: Path, name: str) -> Path:
+    candidate = dataset_dir / f"{name}.json"
+    if candidate.exists():
+        return candidate
 
-    # Output performance results
-    print("\nFinal Performance Results:")
-    for dataset, results in performance_results.items():
-        print(f"{dataset} - Accuracy: {results['accuracy']:.4f}, F1 Score: {results['f1_score']:.4f}")
+    nested = dataset_dir / name / f"{name}.json"
+    if nested.exists():
+        return nested
+
+    archive = dataset_dir / f"{name}.7z"
+    if archive.exists():
+        with py7zr.SevenZipFile(archive, mode="r") as zf:
+            zf.extractall(path=dataset_dir)
+        if candidate.exists():
+            return candidate
+        if nested.exists():
+            return nested
+
+    raise FileNotFoundError(
+        f"Unable to find dataset for '{name}'. Checked {candidate}, {nested}, and archive {archive}."
+    )
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Evaluate OpenAI model on math-word-problem datasets")
+    parser.add_argument("--dataset-dir", type=Path, default=Path(__file__).resolve().parents[2] / "datasets")
+    parser.add_argument("--datasets", nargs="+", default=["MATH", "GSM8K"])
+    parser.add_argument("--model", default="gpt-4o-mini")
+    parser.add_argument("--limit", type=int, default=100)
+    return parser.parse_args()
+
+
+def main() -> None:
+    args = parse_args()
+
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        raise RuntimeError("OPENAI_API_KEY is required")
+
+    client = OpenAI(api_key=api_key)
+
+    for name in args.datasets:
+        dataset_path = resolve_dataset_path(args.dataset_dir, name)
+        data = load_dataset(dataset_path)
+        accuracy, f1 = evaluate(client, args.model, data, limit=args.limit)
+        print(f"{name}: accuracy={accuracy:.4f}, f1={f1:.4f} (samples={min(len(data), args.limit)})")
+
 
 if __name__ == "__main__":
     main()
